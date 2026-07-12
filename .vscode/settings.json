@@ -1,0 +1,24 @@
+{
+    // ignore intellisence tooltip for things that are not fields
+    "[cpp]": {
+        "editor.wordBasedSuggestions": "off",
+        "editor.suggest.showWords": false,
+        "editor.suggest.showSnippets": false,
+        "editor.suggest.showMethods": false,
+        "editor.suggest.showFunctions": false,
+        "editor.suggest.showConstructors": false,
+        "editor.suggest.showOperators": false,
+        "editor.suggest.showKeywords": false,
+        "editor.suggest.showVariables": false,
+        "editor.suggest.showProperties": false,
+        "editor.suggest.showFields": true
+    },
+
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/external/glfw-src/include",
+        "${workspaceFolder}/external/glm-src",
+        "${env:VULKAN_SDK}/Include",
+        "${workspaceFolder}/external/tinyobjloader-src",
+        "${workspaceFolder}/external/stb-src",
+    ],
+}
