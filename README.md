@@ -4,5 +4,5 @@ This is a template repo that includes things needed to get started for my graphi
 # Requirements  
 - Visual Studio Code
 - MSVC 2022
-- Vulkan SDK
+- Vulkan 1.4.x SDK
 - CMake
