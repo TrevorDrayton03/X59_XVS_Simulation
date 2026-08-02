@@ -5,7 +5,6 @@ project(VulkanTutorial LANGUAGES CXX)
 # forces c++20 globally for all targets, including dependencies
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
 set(
@@ -49,6 +48,10 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(glfw glm tinyobjloader stb)
 
 add_executable(${PROJECT_NAME} ${SOURCES})
+# allows designated initializers
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    VULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
+)
 target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_SOURCE_DIR}/external/stb-src") # stb is comprised of single-header libraries and does not provide a normal CMake target to link against
 target_link_libraries(${PROJECT_NAME} Vulkan::Vulkan glfw glm::glm tinyobjloader)
 
