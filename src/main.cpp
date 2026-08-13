@@ -12,6 +12,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstdlib>
+#include <vk_mem_alloc.h>
 
 int main()
 {
