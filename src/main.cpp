@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <cstdlib>
 #include <vk_mem_alloc.h>
+#include "tiny_gltf_v3.h"
 
 int main()
 {
