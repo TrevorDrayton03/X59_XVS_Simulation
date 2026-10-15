@@ -1,7 +1,12 @@
 #include "engine.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <limits>
 #include <ranges>
 #include <stdexcept>
@@ -23,6 +28,73 @@ namespace
     const std::vector<const char*> DEVICE_EXTENSIONS = {
         vk::KHRSwapchainExtensionName
     };
+
+    VKAPI_ATTR vk::Bool32 VKAPI_CALL validationCallback(
+        vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
+        vk::DebugUtilsMessageTypeFlagsEXT,
+        const vk::DebugUtilsMessengerCallbackDataEXT* callbackData,
+        void*)
+    {
+        std::cerr << "Vulkan validation "
+                  << ((severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError)
+                      ? "error: " : "warning: ")
+                  << callbackData->pMessage << '\n';
+        return VK_FALSE;
+    }
+
+#ifndef XVS_SHADER_DIR
+#define XVS_SHADER_DIR "shaders"
+#endif
+
+    std::filesystem::path shaderPath(const char* file)
+    {
+        return std::filesystem::path(XVS_SHADER_DIR) / file;
+    }
+
+    std::vector<uint32_t> readSpirv(const std::filesystem::path& path)
+    {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file)
+        {
+            throw std::runtime_error("Cannot open SPIR-V shader: " + path.string());
+        }
+        const auto byteCount = static_cast<std::streamsize>(file.tellg());
+        if (byteCount <= 0 || (byteCount % sizeof(uint32_t)) != 0)
+        {
+            throw std::runtime_error("Invalid SPIR-V shader size: " + path.string());
+        }
+        std::vector<uint32_t> words(static_cast<size_t>(byteCount) / sizeof(uint32_t));
+        file.seekg(0);
+        if (!file.read(reinterpret_cast<char*>(words.data()),
+                       static_cast<std::streamsize>(words.size() * sizeof(uint32_t))))
+        {
+            throw std::runtime_error("Failed reading shader: " + path.string());
+        }
+        return words;
+    }
+
+    vk::Rect2D toPixelRect(const RenderRegion& region, vk::Extent2D extent)
+    {
+        // Round *edges*, not independent widths, to reduce rounding gaps.
+        const auto pixelX = [&](float v) -> uint32_t
+        {
+            return static_cast<uint32_t>(std::lround(
+                std::clamp(v, 0.0f, 1.0f) * extent.width));
+        };
+        const auto pixelY = [&](float v) -> uint32_t
+        {
+            return static_cast<uint32_t>(std::lround(
+                std::clamp(v, 0.0f, 1.0f) * extent.height));
+        };
+        const uint32_t left = pixelX(region.x);
+        const uint32_t top = pixelY(region.y);
+        const uint32_t right = std::max(left, pixelX(region.x + region.width));
+        const uint32_t bottom = std::max(top, pixelY(region.y + region.height));
+        return vk::Rect2D{
+            .offset = {static_cast<int32_t>(left), static_cast<int32_t>(top)},
+            .extent = {right - left, bottom - top}
+        };
+    }
 }
 
 Engine::GlfwWindowOwner::~GlfwWindowOwner()
@@ -45,7 +117,7 @@ Engine::~Engine()
     {
         try
         {
-            device_.waitIdle();
+            (void)device_.waitIdle();
         }
         catch (...)
         {
@@ -79,13 +151,24 @@ void Engine::initWindow()
     window_.initialized = true;
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     window_.handle = glfwCreateWindow(
         WINDOW_WIDTH, WINDOW_HEIGHT, "XVS Vulkan", nullptr, nullptr);
     if (!window_.handle)
     {
         throw std::runtime_error("glfwCreateWindow() failed");
     }
+
+    glfwSetWindowUserPointer(window_.handle, this);
+    glfwSetFramebufferSizeCallback(window_.handle,
+        [](GLFWwindow* window, int, int)
+        {
+            auto* engine = static_cast<Engine*>(glfwGetWindowUserPointer(window));
+            if (engine)
+            {
+                engine->framebufferResized_ = true;
+            }
+        });
 }
 
 void Engine::createInstance()
@@ -112,8 +195,21 @@ void Engine::createInstance()
         throw std::runtime_error("GLFW returned no required Vulkan extensions");
     }
 
-    const std::vector<const char*> instanceExtensions(
+    std::vector<const char*> instanceExtensions(
         glfwExtensions, glfwExtensions + extensionCount);
+    if (enableValidationLayers)
+    {
+        instanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+
+    const vk::DebugUtilsMessengerCreateInfoEXT debugInfo{
+        .messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eError,
+        .messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
+                       vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
+                       vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
+        .pfnUserCallback = validationCallback,
+    };
 
     vk::ApplicationInfo appInfo{
         .pApplicationName = "XVS Vulkan",
@@ -124,6 +220,7 @@ void Engine::createInstance()
     };
 
     vk::InstanceCreateInfo createInfo{
+        .pNext = enableValidationLayers ? &debugInfo : nullptr,
         .pApplicationInfo = &appInfo,
         .enabledLayerCount = static_cast<uint32_t>(enabledLayers.size()),
         .ppEnabledLayerNames = enabledLayers.data(),
@@ -132,6 +229,11 @@ void Engine::createInstance()
     };
 
     instance_ = vk::raii::Instance(context_, createInfo);
+    if (enableValidationLayers)
+    {
+        debugMessenger_ = vk::raii::DebugUtilsMessengerEXT(instance_, debugInfo);
+        std::cout << "Vulkan validation enabled (warnings and errors go to stderr)\n";
+    }
 }
 
 void Engine::createSurface()
@@ -330,6 +432,139 @@ void Engine::createImageViews()
     }
 }
 
+void Engine::createPipelineLayout()
+{
+    // A vec4 color for each display. A shader push constant is a small
+    // piece of per-draw data; no descriptor sets or uniform buffers needed.
+    vk::PushConstantRange colorRange{
+        .stageFlags = vk::ShaderStageFlagBits::eFragment,
+        .offset = 0,
+        .size = 4 * sizeof(float),
+    };
+    vk::PipelineLayoutCreateInfo layoutInfo{
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &colorRange,
+    };
+    pipelineLayout_ = vk::raii::PipelineLayout(device_, layoutInfo);
+}
+
+void Engine::createGraphicsPipeline()
+{
+    const std::vector<uint32_t> vertexCode = readSpirv(shaderPath("region.vert.spv"));
+    const std::vector<uint32_t> fragmentCode = readSpirv(shaderPath("region.frag.spv"));
+
+    const vk::ShaderModuleCreateInfo vertexModuleInfo{
+        .codeSize = vertexCode.size() * sizeof(uint32_t),
+        .pCode = vertexCode.data(),
+    };
+    const vk::ShaderModuleCreateInfo fragmentModuleInfo{
+        .codeSize = fragmentCode.size() * sizeof(uint32_t),
+        .pCode = fragmentCode.data(),
+    };
+    vk::raii::ShaderModule vertexModule(device_, vertexModuleInfo);
+    vk::raii::ShaderModule fragmentModule(device_, fragmentModuleInfo);
+
+    const std::array<vk::PipelineShaderStageCreateInfo, 2> shaderStages{{
+        {.stage = vk::ShaderStageFlagBits::eVertex,
+         .module = *vertexModule, .pName = "main"},
+        {.stage = vk::ShaderStageFlagBits::eFragment,
+         .module = *fragmentModule, .pName = "main"},
+    }};
+
+    const vk::PipelineVertexInputStateCreateInfo vertexInput{};  // gl_VertexIndex only
+    const vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
+        .topology = vk::PrimitiveTopology::eTriangleList,
+    };
+    const vk::PipelineViewportStateCreateInfo viewportState{
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+    const vk::PipelineRasterizationStateCreateInfo rasterizer{
+        .polygonMode = vk::PolygonMode::eFill,
+        .cullMode = vk::CullModeFlagBits::eNone,
+        .frontFace = vk::FrontFace::eCounterClockwise,
+        .lineWidth = 1.0f,
+    };
+    const vk::PipelineMultisampleStateCreateInfo multisampling{
+        .rasterizationSamples = vk::SampleCountFlagBits::e1,
+    };
+    const vk::PipelineColorBlendAttachmentState colorBlendAttachment{
+        .blendEnable = VK_FALSE,
+        .colorWriteMask = vk::ColorComponentFlagBits::eR |
+                          vk::ColorComponentFlagBits::eG |
+                          vk::ColorComponentFlagBits::eB |
+                          vk::ColorComponentFlagBits::eA,
+    };
+    const vk::PipelineColorBlendStateCreateInfo colorBlend{
+        .attachmentCount = 1,
+        .pAttachments = &colorBlendAttachment,
+    };
+    const std::array<vk::DynamicState, 2> dynamicStates{
+        vk::DynamicState::eViewport, vk::DynamicState::eScissor
+    };
+    const vk::PipelineDynamicStateCreateInfo dynamicState{
+        .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+        .pDynamicStates = dynamicStates.data(),
+    };
+    // Required when the pipeline renders using vkCmdBeginRendering.
+    const vk::PipelineRenderingCreateInfo renderingInfo{
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &swapchainFormat_,
+    };
+    const vk::GraphicsPipelineCreateInfo pipelineInfo{
+        .pNext = &renderingInfo,
+        .stageCount = static_cast<uint32_t>(shaderStages.size()),
+        .pStages = shaderStages.data(),
+        .pVertexInputState = &vertexInput,
+        .pInputAssemblyState = &inputAssembly,
+        .pViewportState = &viewportState,
+        .pRasterizationState = &rasterizer,
+        .pMultisampleState = &multisampling,
+        .pColorBlendState = &colorBlend,
+        .pDynamicState = &dynamicState,
+        .layout = *pipelineLayout_,
+        .renderPass = VK_NULL_HANDLE,
+    };
+    graphicsPipeline_ = vk::raii::Pipeline(device_, nullptr, pipelineInfo);
+}
+
+bool Engine::recreateSwapchain()
+{
+    // Minimized windows have a zero-area framebuffer; wait for restoration.
+    int width = 0;
+    int height = 0;
+    glfwGetFramebufferSize(window_.handle, &width, &height);
+    while (width == 0 || height == 0)
+    {
+        if (shouldClose())
+        {
+            return false;
+        }
+        glfwWaitEvents();
+        glfwGetFramebufferSize(window_.handle, &width, &height);
+    }
+
+    // Simple and safe for Phase A; optimized in-flight recreation is not needed.
+    (void)device_.waitIdle();
+
+    graphicsPipeline_ = vk::raii::Pipeline(nullptr);
+    renderFinishedSemaphores_.clear();
+    swapchainImageViews_.clear();
+    swapchainImages_.clear();
+    swapchain_ = vk::raii::SwapchainKHR(nullptr);
+
+    createSwapchain();
+    createImageViews();
+    createGraphicsPipeline(); // Dynamic rendering format could have changed.
+    for (size_t i = 0; i < swapchainImages_.size(); ++i)
+    {
+        renderFinishedSemaphores_.emplace_back(device_, vk::SemaphoreCreateInfo{});
+    }
+
+    framebufferResized_ = false;
+    return true;
+}
+
 void Engine::createCommandPool()
 {
     vk::CommandPoolCreateInfo poolInfo{
@@ -377,18 +612,42 @@ void Engine::initVulkan()
     createLogicalDevice();
     createSwapchain();
     createImageViews();
+    createPipelineLayout();
+    createGraphicsPipeline();
     createCommandPool();
     allocateCommandBuffers();
     createSyncObjects();
 }
 
-void Engine::drawFrame(const std::array<float, 4>& clearColor)
+void Engine::drawFrame(const std::array<float, 4>& clearColor,
+                       std::span<const RenderRegion> regions)
 {
-    device_.waitForFences({*inFlightFences_[currentFrame_]}, VK_TRUE, UINT64_MAX);
+    if (framebufferResized_ && !recreateSwapchain())
+    {
+        return;
+    }
 
-    const auto [acquireResult, imageIndex] = swapchain_.acquireNextImage(
-        UINT64_MAX, *imageAvailableSemaphores_[currentFrame_], VK_NULL_HANDLE);
-    (void)acquireResult;
+    (void)device_.waitForFences({*inFlightFences_[currentFrame_]}, VK_TRUE, UINT64_MAX);
+
+    vk::Result acquireResult{};
+    uint32_t imageIndex = 0;
+    try
+    {
+        const auto acquired = swapchain_.acquireNextImage(
+            UINT64_MAX, *imageAvailableSemaphores_[currentFrame_], VK_NULL_HANDLE);
+        acquireResult = acquired.result;
+        imageIndex = acquired.value;
+    }
+    catch (const vk::OutOfDateKHRError&)
+    {
+        recreateSwapchain();
+        return;
+    }
+    if (acquireResult == vk::Result::eErrorOutOfDateKHR)
+    {
+        recreateSwapchain();
+        return;
+    }
 
     auto& commandBuffer = commandBuffers_[currentFrame_];
     commandBuffer.reset();
@@ -435,7 +694,34 @@ void Engine::drawFrame(const std::array<float, 4>& clearColor)
     };
 
     commandBuffer.beginRendering(renderInfo);
-    // Future draw calls for the four XVS display regions go here.
+
+    // Phase A: one bound pipeline, four draws, each with its own
+    // viewport, scissor, and push-constant color.
+    commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline_);
+    for (const RenderRegion& region : regions)
+    {
+        const vk::Rect2D rect = toPixelRect(region, swapchainExtent_);
+        if (rect.extent.width == 0 || rect.extent.height == 0)
+        {
+            continue;
+        }
+
+        const vk::Viewport viewport{
+            .x = static_cast<float>(rect.offset.x),
+            .y = static_cast<float>(rect.offset.y),
+            .width = static_cast<float>(rect.extent.width),
+            .height = static_cast<float>(rect.extent.height),
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f,
+        };
+        commandBuffer.setViewport(0, viewport);
+        commandBuffer.setScissor(0, rect);
+        commandBuffer.pushConstants<float>(*pipelineLayout_,
+                                           vk::ShaderStageFlagBits::eFragment,
+                                           0, region.color);
+        commandBuffer.draw(3, 1, 0, 0);
+    }
+
     commandBuffer.endRendering();
 
     vk::ImageMemoryBarrier2 toPresent{
@@ -492,7 +778,23 @@ void Engine::drawFrame(const std::array<float, 4>& clearColor)
         .pSwapchains = &swapchainHandle,
         .pImageIndices = &imageIndex,
     };
-    queue_.presentKHR(presentInfo);
+    vk::Result presentResult{};
+    try
+    {
+        presentResult = queue_.presentKHR(presentInfo);
+    }
+    catch (const vk::OutOfDateKHRError&)
+    {
+        presentResult = vk::Result::eErrorOutOfDateKHR;
+    }
 
     currentFrame_ = (currentFrame_ + 1) % framesInFlight_;
+
+    if (framebufferResized_ ||
+        acquireResult == vk::Result::eSuboptimalKHR ||
+        presentResult == vk::Result::eSuboptimalKHR ||
+        presentResult == vk::Result::eErrorOutOfDateKHR)
+    {
+        recreateSwapchain();
+    }
 }

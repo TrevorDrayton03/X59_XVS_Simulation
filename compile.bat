@@ -1,5 +1,6 @@
 @echo off
-cd /d "%~dp0external"
+cd /d "%~dp0"
 
-echo Shaders compiled successfully.
-REM pause
+REM Use the same shader compiler and output directory as the application build.
+cmake --build build --config Debug --target XVS_Shaders
+exit /b %errorlevel%

@@ -184,3 +184,18 @@ const Telemetry& XVS::latestTelemetry() const noexcept
 {
     return impl_->latest;
 }
+
+const std::array<XVSDisplayRegion, 4>& XVS::displayLayout() noexcept
+{
+    static const std::array<XVSDisplayRegion, 4> regions{{
+        {XVSDisplay::ExternalVision, 0.23f, 0.05f, 0.65f, 0.43f,
+         {0.07f, 0.35f, 0.55f, 1.0f}},
+        {XVSDisplay::Standby,        0.04f, 0.28f, 0.16f, 0.18f,
+         {0.85f, 0.58f, 0.19f, 1.0f}},
+        {XVSDisplay::Navigation,     0.08f, 0.56f, 0.40f, 0.36f,
+         {0.09f, 0.50f, 0.35f, 1.0f}},
+        {XVSDisplay::PrimaryFlight,  0.52f, 0.56f, 0.40f, 0.36f,
+         {0.53f, 0.31f, 0.65f, 1.0f}},
+    }};
+    return regions;
+}

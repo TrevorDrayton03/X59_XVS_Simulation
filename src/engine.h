@@ -19,8 +19,21 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
 #include <vector>
 
+// A colored rectangle expressed as fractions of the framebuffer size.
+// This is independent of the cockpit names and of UDP telemetry.
+struct RenderRegion
+{
+    float x;       // 0.0 = left side of the framebuffer
+    float y;       // 0.0 = top side of the framebuffer
+    float width;   // fraction of framebuffer width
+    float height;  // fraction of framebuffer height
+    std::array<float, 4> color;
+};
+
+// Owns the GLFW window and Vulkan objects. Knows nothing about UDP or XVS.
 class Engine
 {
 public:
@@ -33,7 +46,8 @@ public:
     void initialize();
     void pollEvents() const;
     bool shouldClose() const;
-    void drawFrame(const std::array<float, 4>& clearColor);
+    void drawFrame(const std::array<float, 4>& clearColor,
+                   std::span<const RenderRegion> regions);
 
 private:
     // Declared before all Vulkan members so GLFW shuts down AFTER Vulkan
@@ -48,6 +62,7 @@ private:
     GlfwWindowOwner window_;
     vk::raii::Context context_;
     vk::raii::Instance instance_{nullptr};
+    vk::raii::DebugUtilsMessengerEXT debugMessenger_{nullptr};
     vk::raii::PhysicalDevice physicalDevice_{nullptr};
     vk::raii::Device device_{nullptr};
     vk::raii::Queue queue_{nullptr};
@@ -59,6 +74,11 @@ private:
     vk::Format swapchainFormat_{vk::Format::eUndefined};
     vk::Extent2D swapchainExtent_{};
 
+    // One pipeline for all four colored regions. Created with dynamic
+    // viewport/scissor and one vec4 push constant.
+    vk::raii::PipelineLayout pipelineLayout_{nullptr};
+    vk::raii::Pipeline graphicsPipeline_{nullptr};
+
     vk::raii::CommandPool commandPool_{nullptr};
     vk::raii::CommandBuffers commandBuffers_{nullptr};
     std::vector<vk::raii::Fence> inFlightFences_;
@@ -68,6 +88,7 @@ private:
     uint32_t queueFamilyIndex_ = UINT32_MAX;
     uint32_t framesInFlight_ = 2;
     uint32_t currentFrame_ = 0;
+    bool framebufferResized_ = false;
 
     void initWindow();
     void initVulkan();
@@ -78,6 +99,9 @@ private:
     void createLogicalDevice();
     void createSwapchain();
     void createImageViews();
+    void createPipelineLayout();
+    void createGraphicsPipeline();
+    bool recreateSwapchain();
     void createCommandPool();
     void allocateCommandBuffers();
     void createSyncObjects();

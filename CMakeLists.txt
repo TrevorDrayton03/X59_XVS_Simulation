@@ -79,7 +79,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     VULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
 )
 target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_SOURCE_DIR}/external/stb-src") # stb is comprised of single-header libraries and does not provide a normal CMake target to link against
-target_link_libraries(${PROJECT_NAME} Vulkan::Vulkan glfw glm::glm tinyobjloader tinygltf GPUOpen::VulkanMemoryAllocator)
+target_link_libraries(${PROJECT_NAME} Vulkan::Vulkan glfw glm::glm tinyobjloader tinygltf GPUOpen::VulkanMemoryAllocator ws2_32)
 
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 
@@ -90,3 +90,43 @@ else()
     message(FATAL_ERROR "Expected 64-bit architecture, but detected 32-bit. Please configure for 64-bit.")
 endif()
 # cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+# ---- XVS Phase A: compile the region shaders into SPIR-V -------------------
+# glslc is included in the installed Vulkan SDK.
+if(Vulkan_GLSLC_EXECUTABLE)
+    set(GLSLC "${Vulkan_GLSLC_EXECUTABLE}")
+else()
+    find_program(GLSLC NAMES glslc
+        HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/Bin32")
+endif()
+
+if(NOT GLSLC)
+    message(FATAL_ERROR "glslc was not found. Install the Vulkan SDK or add its Bin directory to PATH.")
+endif()
+
+set(XVS_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+set(XVS_SPV_FILES)
+
+foreach(SHADER IN ITEMS region.vert region.frag)
+    set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${SHADER}")
+    set(SHADER_BINARY "${XVS_SHADER_OUTPUT_DIR}/${SHADER}.spv")
+
+    add_custom_command(
+        OUTPUT "${SHADER_BINARY}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${XVS_SHADER_OUTPUT_DIR}"
+        COMMAND "${GLSLC}" "${SHADER_SOURCE}" -o "${SHADER_BINARY}"
+        DEPENDS "${SHADER_SOURCE}"
+        COMMENT "Compiling ${SHADER} to SPIR-V"
+        VERBATIM
+    )
+
+    list(APPEND XVS_SPV_FILES "${SHADER_BINARY}")
+endforeach()
+
+add_custom_target(XVS_Shaders DEPENDS ${XVS_SPV_FILES})
+add_dependencies(${PROJECT_NAME} XVS_Shaders)
+
+# Used by engine.cpp when loading region.vert.spv and region.frag.spv.
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    XVS_SHADER_DIR="${XVS_SHADER_OUTPUT_DIR}"
+)
