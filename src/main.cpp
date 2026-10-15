@@ -1,22 +1,50 @@
-#define GLFW_INCLUDE_VULKAN
-#define STB_IMAGE_IMPLEMENTATION
-#define GLM_ENABLE_EXPERIMENTAL
-#define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS 1
-#include <GLFW/glfw3.h>
-#include <vulkan/vulkan_raii.hpp>
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtx/hash.hpp>
-#include <tiny_obj_loader.h>
-#include <stb_image.h>
-#include <iostream>
-#include <stdexcept>
+#include "Engine/engine.h"
+#include "XVS/XVS.h"
+
+#include <algorithm>
+#include <array>
 #include <cstdlib>
-#include <vk_mem_alloc.h>
-#include "tiny_gltf_v3.h"
+#include <exception>
+#include <iostream>
 
 int main()
 {
-    std::cout << "Hello World";
-    return EXIT_SUCCESS;
+    try
+    {
+        Engine engine;
+        XVS xvs;
+
+        engine.initialize();
+        xvs.initialize(5500);
+
+        while (!engine.shouldClose())
+        {
+            engine.pollEvents();
+            xvs.poll();
+
+            // Temporary visual test: UE5 airspeed drives the blue channel.
+            // Later, use the same telemetry for camera/view transforms,
+            // instruments, and four synchronized XVS display regions.
+            std::array<float, 4> clearColor{0.02f, 0.05f, 0.20f, 1.0f};
+            if (xvs.hasTelemetry())
+            {
+                const Telemetry& t = xvs.latestTelemetry();
+                clearColor[2] += std::clamp(
+                    static_cast<float>(t.airspeedKts / 400.0), 0.0f, 0.7f);
+                    
+                std::cout << "\rAirspeed: "
+                << t.airspeedKts
+                << " knots    " << std::flush;
+            }
+
+            engine.drawFrame(clearColor);
+        }
+
+        return EXIT_SUCCESS;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Application error: " << e.what() << '\n';
+        return EXIT_FAILURE;
+    }
 }
